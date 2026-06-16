@@ -12,7 +12,17 @@ import {
   Download,
   Eye,
   Check,
+  ChevronDown,
 } from "lucide-react";
+import {
+  generateCSV,
+  generateJSON,
+  generateHTML,
+  createBlob,
+  downloadFile,
+  getFileExtension,
+  getMimeType,
+} from "@/lib/export";
 
 interface ExtractedField {
   name: string;
@@ -38,6 +48,10 @@ export default function DocumentDetailPage() {
   const [fieldValue, setFieldValue] = useState("");
   const [showTablePreview, setShowTablePreview] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [exportFormat, setExportFormat] = useState<"csv" | "json" | "html">(
+    "csv"
+  );
+  const [showExportMenu, setShowExportMenu] = useState(false);
 
   useEffect(() => {
     const fetchDoc = async () => {
@@ -146,7 +160,7 @@ export default function DocumentDetailPage() {
     }
   };
 
-  const handleExportExcel = async () => {
+  const handleExport = async (format: "csv" | "json" | "html") => {
     if (fields.length === 0) {
       alert("No fields to export");
       return;
@@ -155,24 +169,37 @@ export default function DocumentDetailPage() {
     setExporting(true);
 
     try {
-      // Create CSV content
-      const headers = fields.map((f) => f.name).join(",");
-      const values = fields.map((f) => `"${f.value.replace(/"/g, '""')}"`).join(",");
-      const csv = `${headers}\n${values}`;
+      const baseFileName = doc.fileName.replace(/\.[^/.]+$/, "");
+      let content: string;
 
-      // Download CSV
-      const blob = new Blob([csv], { type: "text/csv" });
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${doc.fileName.replace(/\.[^/.]+$/, "")}_extracted.csv`;
-      link.click();
-      window.URL.revokeObjectURL(url);
+      switch (format) {
+        case "csv":
+          content = generateCSV(fields);
+          break;
+        case "json":
+          content = generateJSON(fields);
+          break;
+        case "html":
+          content = generateHTML(fields, baseFileName);
+          break;
+        default:
+          throw new Error("Unknown format");
+      }
+
+      const blob = createBlob(
+        content,
+        getMimeType(format)
+      );
+      downloadFile(
+        blob,
+        `${baseFileName}_extracted.${getFileExtension(format)}`
+      );
     } catch (error) {
       alert("Export failed");
     }
 
     setExporting(false);
+    setShowExportMenu(false);
   };
 
   if (loading) {
@@ -214,14 +241,35 @@ export default function DocumentDetailPage() {
 
         <div className="flex gap-2">
           {fields.length > 0 && (
-            <button
-              onClick={handleExportExcel}
-              disabled={exporting}
-              className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2 font-semibold text-zinc-300 disabled:opacity-50"
-            >
-              <Download className="h-4 w-4" />
-              {exporting ? "Exporting..." : "Export CSV"}
-            </button>
+            <div className="relative">
+              <button
+                onClick={() => setShowExportMenu(!showExportMenu)}
+                disabled={exporting}
+                className="flex items-center gap-2 rounded-lg border border-zinc-700 bg-zinc-900 px-4 py-2 font-semibold text-zinc-300 disabled:opacity-50 hover:bg-zinc-800"
+              >
+                <Download className="h-4 w-4" />
+                {exporting ? "Exporting..." : "Export"}
+                <ChevronDown className="h-4 w-4" />
+              </button>
+
+              {showExportMenu && (
+                <div className="absolute right-0 mt-2 w-40 rounded-lg border border-zinc-700 bg-zinc-900 shadow-lg z-10">
+                  {[
+                    { format: "csv", label: "CSV (Excel)" },
+                    { format: "json", label: "JSON" },
+                    { format: "html", label: "HTML (Print)" },
+                  ].map((option) => (
+                    <button
+                      key={option.format}
+                      onClick={() => handleExport(option.format as any)}
+                      className="w-full px-4 py-2 text-left text-sm text-zinc-300 hover:bg-zinc-800 first:rounded-t-lg last:rounded-b-lg"
+                    >
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
           )}
 
           <button
