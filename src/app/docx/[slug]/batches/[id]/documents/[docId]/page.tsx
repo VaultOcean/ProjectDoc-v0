@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useRouter, useParams } from "next/navigation";
 import Link from "next/link";
 import {
@@ -10,9 +10,10 @@ import {
   Lock,
   AlertTriangle,
   Download,
-  Eye,
   Check,
   ChevronDown,
+  Plus,
+  Sparkles,
 } from "lucide-react";
 import {
   generateCSV,
@@ -23,6 +24,7 @@ import {
   getFileExtension,
   getMimeType,
 } from "@/lib/export";
+import { detectFields, type DetectedField } from "@/lib/smart-fields";
 
 interface ExtractedField {
   name: string;
@@ -46,11 +48,7 @@ export default function DocumentDetailPage() {
   const [selectedText, setSelectedText] = useState("");
   const [fieldName, setFieldName] = useState("");
   const [fieldValue, setFieldValue] = useState("");
-  const [showTablePreview, setShowTablePreview] = useState(false);
   const [exporting, setExporting] = useState(false);
-  const [exportFormat, setExportFormat] = useState<"csv" | "json" | "html">(
-    "csv"
-  );
   const [showExportMenu, setShowExportMenu] = useState(false);
 
   useEffect(() => {
@@ -60,7 +58,6 @@ export default function DocumentDetailPage() {
         const data = await res.json();
         setDoc(data);
 
-        // Parse existing extracted data
         const extractedData = data.extractedData || {};
         const initialFields = Object.entries(extractedData).map(
           ([name, value]: [string, any]) => ({
@@ -79,6 +76,36 @@ export default function DocumentDetailPage() {
     fetchDoc();
   }, [docId]);
 
+  // Auto-detected label→value pairs from the extracted text.
+  const detected = useMemo<DetectedField[]>(
+    () => (doc?.extractedText ? detectFields(doc.extractedText) : []),
+    [doc?.extractedText]
+  );
+
+  const hasField = (name: string) =>
+    fields.some((f) => f.name.toLowerCase() === name.toLowerCase());
+
+  const addField = (name: string, value: string) => {
+    const n = name.trim();
+    const v = value.trim();
+    if (!n || !v) return;
+    if (hasField(n)) return;
+    setFields((prev) => [
+      ...prev,
+      { name: n, value: v, verified: false, encrypted: false, isPii: false },
+    ]);
+  };
+
+  const toggleDetected = (d: DetectedField) => {
+    if (hasField(d.name)) {
+      setFields((prev) =>
+        prev.filter((f) => f.name.toLowerCase() !== d.name.toLowerCase())
+      );
+    } else {
+      addField(d.name, d.value);
+    }
+  };
+
   const handleSelectText = () => {
     const selection = window.getSelection();
     if (selection && selection.toString().length > 0) {
@@ -88,40 +115,29 @@ export default function DocumentDetailPage() {
     }
   };
 
-  const handleAddField = () => {
+  const handleAddManual = () => {
     if (!fieldName.trim() || !fieldValue.trim()) {
       alert("Field name and value are required");
       return;
     }
-
-    const newField: ExtractedField = {
-      name: fieldName.trim(),
-      value: fieldValue.trim(),
-      verified: false,
-      encrypted: false,
-      isPii: false,
-    };
-
-    // Check for duplicates
-    if (fields.some((f) => f.name.toLowerCase() === fieldName.toLowerCase())) {
+    if (hasField(fieldName)) {
       alert("Field name already exists");
       return;
     }
-
-    setFields([...fields, newField]);
+    addField(fieldName, fieldValue);
     setFieldName("");
     setFieldValue("");
     setSelectedText("");
   };
 
-  const handleUpdateField = (index: number, field: ExtractedField) => {
-    const updated = [...fields];
-    updated[index] = field;
-    setFields(updated);
+  const updateField = (index: number, patch: Partial<ExtractedField>) => {
+    setFields((prev) =>
+      prev.map((f, i) => (i === index ? { ...f, ...patch } : f))
+    );
   };
 
-  const handleRemoveField = (index: number) => {
-    setFields(fields.filter((_, i) => i !== index));
+  const removeField = (index: number) => {
+    setFields((prev) => prev.filter((_, i) => i !== index));
   };
 
   const handleSave = async () => {
@@ -129,7 +145,6 @@ export default function DocumentDetailPage() {
       alert("Please add at least one field");
       return;
     }
-
     setSaving(true);
 
     const extractedData: Record<string, any> = {};
@@ -145,10 +160,7 @@ export default function DocumentDetailPage() {
     const res = await fetch(`/api/docx/documents/${docId}`, {
       method: "PATCH",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        extractedData,
-        status: "verified",
-      }),
+      body: JSON.stringify({ extractedData, status: "verified" }),
     });
 
     if (res.ok) {
@@ -165,13 +177,10 @@ export default function DocumentDetailPage() {
       alert("No fields to export");
       return;
     }
-
     setExporting(true);
-
     try {
       const baseFileName = doc.fileName.replace(/\.[^/.]+$/, "");
       let content: string;
-
       switch (format) {
         case "csv":
           content = generateCSV(fields);
@@ -185,19 +194,11 @@ export default function DocumentDetailPage() {
         default:
           throw new Error("Unknown format");
       }
-
-      const blob = createBlob(
-        content,
-        getMimeType(format)
-      );
-      downloadFile(
-        blob,
-        `${baseFileName}_extracted.${getFileExtension(format)}`
-      );
-    } catch (error) {
+      const blob = createBlob(content, getMimeType(format));
+      downloadFile(blob, `${baseFileName}_extracted.${getFileExtension(format)}`);
+    } catch {
       alert("Export failed");
     }
-
     setExporting(false);
     setShowExportMenu(false);
   };
@@ -218,19 +219,21 @@ export default function DocumentDetailPage() {
     );
   }
 
+  const unusedDetected = detected.filter((d) => !hasField(d.name));
+
   return (
     <div className="mx-auto max-w-7xl px-4 py-8">
       {/* Header */}
-      <div className="mb-8 flex items-center justify-between">
-        <div className="flex items-center gap-4">
+      <div className="mb-6 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-4 min-w-0">
           <Link
             href={`/docx/${slug}/batches/${batchId}`}
-            className="flex items-center justify-center w-10 h-10 rounded-lg border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 transition"
+            className="flex items-center justify-center w-10 h-10 rounded-lg border border-zinc-800 bg-zinc-900 hover:bg-zinc-800 transition flex-shrink-0"
           >
             <ArrowLeft className="h-4 w-4 text-zinc-400" />
           </Link>
-          <div>
-            <h1 className="text-2xl font-bold text-zinc-100">
+          <div className="min-w-0">
+            <h1 className="text-2xl font-bold text-zinc-100 truncate">
               {doc.fileName}
             </h1>
             <p className="mt-1 text-sm text-zinc-400">
@@ -239,7 +242,7 @@ export default function DocumentDetailPage() {
           </div>
         </div>
 
-        <div className="flex gap-2">
+        <div className="flex gap-2 flex-shrink-0">
           {fields.length > 0 && (
             <div className="relative">
               <button
@@ -251,9 +254,8 @@ export default function DocumentDetailPage() {
                 {exporting ? "Exporting..." : "Export"}
                 <ChevronDown className="h-4 w-4" />
               </button>
-
               {showExportMenu && (
-                <div className="absolute right-0 mt-2 w-40 rounded-lg border border-zinc-700 bg-zinc-900 shadow-lg z-10">
+                <div className="absolute right-0 mt-2 w-44 rounded-lg border border-zinc-700 bg-zinc-900 shadow-lg z-10">
                   {[
                     { format: "csv", label: "CSV (Excel)" },
                     { format: "json", label: "JSON" },
@@ -287,29 +289,67 @@ export default function DocumentDetailPage() {
         {/* Left: Document Preview */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
           <h2 className="font-semibold text-zinc-100 mb-4">Document Text</h2>
-
           <div
-            className="rounded-lg border border-zinc-700 bg-zinc-950 p-4 min-h-96 max-h-96 overflow-auto text-sm text-zinc-300 whitespace-pre-wrap break-words select-text cursor-text"
+            className="rounded-lg border border-zinc-700 bg-zinc-950 p-4 min-h-[28rem] max-h-[28rem] overflow-auto text-sm text-zinc-300 whitespace-pre-wrap break-words select-text cursor-text"
             onMouseUp={handleSelectText}
           >
             {doc.extractedText || "No text extracted"}
           </div>
-
           <p className="mt-3 text-xs text-zinc-600">
-            💡 Highlight text above, then add as a field →
+            Highlight any text above to drop it into the value box →
           </p>
         </div>
 
-        {/* Right: Field Mapper */}
+        {/* Right: Smart detection + manual add */}
         <div className="space-y-6">
-          {/* Add Field Form */}
+          {/* Detected fields */}
           <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
-            <h3 className="font-semibold text-zinc-100 mb-4">Add Field</h3>
+            <div className="flex items-center gap-2 mb-1">
+              <Sparkles className="h-4 w-4 text-tide" />
+              <h3 className="font-semibold text-zinc-100">Detected Fields</h3>
+              <span className="text-xs text-zinc-500">
+                ({unusedDetected.length} available)
+              </span>
+            </div>
+            <p className="text-xs text-zinc-500 mb-4">
+              Click a label to add it as a column. The value is mapped
+              automatically — you can edit it in the table below.
+            </p>
 
+            {unusedDetected.length === 0 ? (
+              <p className="text-xs text-zinc-600">
+                {detected.length === 0
+                  ? "No fields auto-detected. Use the manual add or highlight text."
+                  : "All detected fields added."}
+              </p>
+            ) : (
+              <div className="flex flex-wrap gap-2">
+                {unusedDetected.map((d) => (
+                  <button
+                    key={d.name}
+                    onClick={() => toggleDetected(d)}
+                    className="group flex items-center gap-1.5 rounded-lg border border-zinc-700 bg-zinc-950 px-3 py-1.5 text-left transition hover:border-tide hover:bg-zinc-900"
+                  >
+                    <Plus className="h-3 w-3 text-tide" />
+                    <span className="text-xs font-semibold text-zinc-200">
+                      {d.name}
+                    </span>
+                    <span className="text-xs text-zinc-500 max-w-[10rem] truncate">
+                      {d.value}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Manual add */}
+          <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
+            <h3 className="font-semibold text-zinc-100 mb-4">Add Field Manually</h3>
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-semibold text-zinc-400 mb-1">
-                  Field Name
+                  Column Name
                 </label>
                 <input
                   type="text"
@@ -317,156 +357,162 @@ export default function DocumentDetailPage() {
                   onChange={(e) => setFieldName(e.target.value)}
                   placeholder="e.g., Order No, KRA PIN, Total"
                   className="w-full bg-zinc-950 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:border-zinc-600 focus:outline-none"
-                  onKeyPress={(e) => e.key === "Enter" && handleAddField()}
+                  onKeyDown={(e) => e.key === "Enter" && handleAddManual()}
                 />
               </div>
-
               <div>
                 <label className="block text-xs font-semibold text-zinc-400 mb-1">
-                  Field Value {selectedText && "(from selection)"}
+                  Value {selectedText && "(from selection)"}
                 </label>
                 <textarea
                   value={fieldValue}
                   onChange={(e) => setFieldValue(e.target.value)}
-                  placeholder="Paste or type the extracted value"
+                  placeholder="Highlight text on the left, or type here"
                   className="w-full bg-zinc-950 border border-zinc-700 rounded px-3 py-2 text-sm text-zinc-100 placeholder-zinc-600 focus:border-zinc-600 focus:outline-none resize-none"
                   rows={2}
                 />
               </div>
-
               <button
-                onClick={handleAddField}
+                onClick={handleAddManual}
                 className="w-full rounded-lg bg-tide px-3 py-2 text-sm font-semibold text-black transition hover:bg-tide/90"
               >
-                + Add Field
+                + Add Column
               </button>
             </div>
           </div>
+        </div>
+      </div>
 
-          {/* Table Preview */}
+      {/* Excel-style table */}
+      <div className="mt-6 rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h3 className="font-semibold text-zinc-100">
+            Table Preview{" "}
+            <span className="text-xs font-normal text-zinc-500">
+              ({fields.length} column{fields.length === 1 ? "" : "s"})
+            </span>
+          </h3>
           {fields.length > 0 && (
-            <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-semibold text-zinc-100">
-                  Extracted Data ({fields.length})
-                </h3>
-                <button
-                  onClick={() => setShowTablePreview(!showTablePreview)}
-                  className="flex items-center gap-1 text-xs text-tide hover:underline"
-                >
-                  <Eye className="h-3 w-3" />
-                  {showTablePreview ? "Hide" : "Preview"}
-                </button>
-              </div>
-
-              {showTablePreview && (
-                <div className="mb-4 border border-zinc-700 rounded overflow-hidden">
-                  <table className="w-full text-xs">
-                    <thead>
-                      <tr className="bg-zinc-800">
-                        <th className="px-3 py-2 text-left text-zinc-300 font-semibold">
-                          Field
-                        </th>
-                        <th className="px-3 py-2 text-left text-zinc-300 font-semibold">
-                          Value
-                        </th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-zinc-700">
-                      {fields.map((field) => (
-                        <tr key={field.name} className="hover:bg-zinc-900/50">
-                          <td className="px-3 py-2 text-zinc-300 font-mono">
-                            {field.name}
-                          </td>
-                          <td className="px-3 py-2 text-zinc-400 truncate">
-                            {field.value}
-                          </td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-
-              {/* Field List */}
-              <div className="space-y-2 max-h-64 overflow-auto">
-                {fields.map((field, idx) => (
-                  <div
-                    key={idx}
-                    className="rounded-lg border border-zinc-700 bg-zinc-950 p-3"
-                  >
-                    <div className="flex items-start justify-between gap-2 mb-2">
-                      <div className="flex-1 min-w-0">
-                        <p className="text-sm font-semibold text-zinc-100 truncate">
-                          {field.name}
-                        </p>
-                        <p className="text-xs text-zinc-600 truncate mt-0.5">
-                          {field.value}
-                        </p>
-                      </div>
-                      <button
-                        onClick={() => handleRemoveField(idx)}
-                        className="text-zinc-600 hover:text-red-400 transition flex-shrink-0"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    </div>
-
-                    <div className="flex gap-2 flex-wrap text-xs">
-                      <label className="flex items-center gap-1 cursor-pointer text-zinc-500 hover:text-zinc-300">
-                        <input
-                          type="checkbox"
-                          checked={field.encrypted}
-                          onChange={(e) =>
-                            handleUpdateField(idx, {
-                              ...field,
-                              encrypted: e.target.checked,
-                            })
-                          }
-                          className="w-3 h-3"
-                        />
-                        <Lock className="h-3 w-3" />
-                        Encrypt
-                      </label>
-
-                      <label className="flex items-center gap-1 cursor-pointer text-zinc-500 hover:text-zinc-300">
-                        <input
-                          type="checkbox"
-                          checked={field.isPii}
-                          onChange={(e) =>
-                            handleUpdateField(idx, {
-                              ...field,
-                              isPii: e.target.checked,
-                            })
-                          }
-                          className="w-3 h-3"
-                        />
-                        <AlertTriangle className="h-3 w-3" />
-                        PII
-                      </label>
-
-                      <label className="flex items-center gap-1 cursor-pointer text-zinc-500 hover:text-zinc-300 ml-auto">
-                        <input
-                          type="checkbox"
-                          checked={field.verified}
-                          onChange={(e) =>
-                            handleUpdateField(idx, {
-                              ...field,
-                              verified: e.target.checked,
-                            })
-                          }
-                          className="w-3 h-3"
-                        />
-                        <Check className="h-3 w-3" />
-                        Verified
-                      </label>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </div>
+            <span className="text-xs text-zinc-500">
+              This document is one row. A batch export combines all documents
+              into multiple rows.
+            </span>
           )}
         </div>
+
+        {fields.length === 0 ? (
+          <div className="rounded-lg border border-dashed border-zinc-700 p-10 text-center">
+            <p className="text-sm text-zinc-500">
+              No columns yet. Click a detected field above or add one manually.
+            </p>
+          </div>
+        ) : (
+          <div className="overflow-x-auto rounded-lg border border-zinc-700">
+            <table className="w-full text-sm border-collapse">
+              <thead>
+                <tr className="bg-zinc-800">
+                  {fields.map((f, idx) => (
+                    <th
+                      key={idx}
+                      className="px-3 py-2 text-left font-semibold text-zinc-200 border-r border-zinc-700 last:border-r-0 whitespace-nowrap"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="flex items-center gap-1">
+                          {f.encrypted && (
+                            <Lock className="h-3 w-3 text-amber-400" />
+                          )}
+                          {f.isPii && (
+                            <AlertTriangle className="h-3 w-3 text-red-400" />
+                          )}
+                          {f.name}
+                        </span>
+                        <button
+                          onClick={() => removeField(idx)}
+                          className="text-zinc-500 hover:text-red-400"
+                          title="Remove column"
+                        >
+                          <X className="h-3 w-3" />
+                        </button>
+                      </div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                <tr className="bg-zinc-950">
+                  {fields.map((f, idx) => (
+                    <td
+                      key={idx}
+                      className="px-3 py-2 border-r border-zinc-800 last:border-r-0 align-top"
+                    >
+                      <input
+                        value={f.value}
+                        onChange={(e) =>
+                          updateField(idx, { value: e.target.value })
+                        }
+                        className="w-full min-w-[8rem] bg-transparent text-zinc-300 focus:outline-none focus:text-zinc-100"
+                      />
+                    </td>
+                  ))}
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+
+        {/* Per-column flags */}
+        {fields.length > 0 && (
+          <div className="mt-4 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+            {fields.map((f, idx) => (
+              <div
+                key={idx}
+                className="rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2"
+              >
+                <p className="text-xs font-semibold text-zinc-300 truncate mb-1.5">
+                  {f.name}
+                </p>
+                <div className="flex gap-3 text-xs">
+                  <label className="flex items-center gap-1 cursor-pointer text-zinc-500 hover:text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={f.encrypted}
+                      onChange={(e) =>
+                        updateField(idx, { encrypted: e.target.checked })
+                      }
+                      className="w-3 h-3"
+                    />
+                    <Lock className="h-3 w-3" />
+                    Encrypt
+                  </label>
+                  <label className="flex items-center gap-1 cursor-pointer text-zinc-500 hover:text-zinc-300">
+                    <input
+                      type="checkbox"
+                      checked={f.isPii}
+                      onChange={(e) =>
+                        updateField(idx, { isPii: e.target.checked })
+                      }
+                      className="w-3 h-3"
+                    />
+                    <AlertTriangle className="h-3 w-3" />
+                    PII
+                  </label>
+                  <label className="flex items-center gap-1 cursor-pointer text-zinc-500 hover:text-zinc-300 ml-auto">
+                    <input
+                      type="checkbox"
+                      checked={f.verified}
+                      onChange={(e) =>
+                        updateField(idx, { verified: e.target.checked })
+                      }
+                      className="w-3 h-3"
+                    />
+                    <Check className="h-3 w-3" />
+                    Verified
+                  </label>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
     </div>
   );
