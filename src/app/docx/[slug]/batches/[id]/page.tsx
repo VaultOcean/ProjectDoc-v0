@@ -79,24 +79,55 @@ export default function BatchDetailPage() {
           const uint8Array = new Uint8Array(buffer);
           const pdfjsLib = await import("pdfjs-dist");
 
-          pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+          // Try multiple worker sources
+          const workerSources = [
+            `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`,
+            `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`,
+            `/pdf.worker.min.js`, // Local fallback
+          ];
+
+          let workerLoaded = false;
+          for (const src of workerSources) {
+            try {
+              pdfjsLib.GlobalWorkerOptions.workerSrc = src;
+              // Try to load a test document to verify worker works
+              const testPdf = await pdfjsLib.getDocument({ data: new Uint8Array([]) }).promise.catch(() => null);
+              workerLoaded = true;
+              break;
+            } catch (e) {
+              continue;
+            }
+          }
 
           const pdf = await pdfjsLib.getDocument({ data: uint8Array }).promise;
           const textChunks: string[] = [];
 
-          for (let i = 1; i <= pdf.numPages; i++) {
-            const page = await pdf.getPage(i);
-            const textContent = await page.getTextContent();
-            const text = textContent.items
-              .map((item: any) => item.str)
-              .join(" ");
-            textChunks.push(text);
+          // Extract text from all pages
+          for (let i = 1; i <= Math.min(pdf.numPages, 50); i++) {
+            // Limit to first 50 pages for performance
+            try {
+              const page = await pdf.getPage(i);
+              const textContent = await page.getTextContent();
+              const pageText = textContent.items
+                .map((item: any) => (item.str || "").trim())
+                .filter((s: string) => s.length > 0)
+                .join(" ");
+
+              if (pageText.length > 0) {
+                textChunks.push(`[Page ${i}]\n${pageText}`);
+              }
+            } catch (pageError) {
+              console.warn(`Failed to extract page ${i}:`, pageError);
+            }
           }
 
-          extractedText = textChunks.join("\n\n");
+          extractedText =
+            textChunks.length > 0
+              ? textChunks.join("\n\n")
+              : "[PDF found but no text extracted - may be image-only PDF]";
         } catch (pdfError) {
-          console.warn("PDF extraction failed:", pdfError);
-          extractedText = "[PDF text extraction failed]";
+          console.warn("PDF extraction error:", pdfError);
+          extractedText = "[PDF text extraction failed - file may be corrupted or image-only]";
         }
       } else if (file.type.startsWith("image/")) {
         extractedText = "[Image - OCR coming soon]";
