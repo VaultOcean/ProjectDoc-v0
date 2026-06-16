@@ -56,6 +56,73 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
 }
 
 /**
+ * DELETE /api/docx/documents/[id]
+ * Delete a document file
+ */
+export async function DELETE(
+  req: Request,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const user = await getCurrentUser();
+  if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  const { id } = await params;
+
+  const doc = await db.documentFile.findUnique({
+    where: { id },
+    include: { batch: true },
+  });
+
+  if (!doc) {
+    return NextResponse.json(
+      { error: "Document not found" },
+      { status: 404 }
+    );
+  }
+
+  // Verify user has access
+  const companyUser = await db.companyUser.findUnique({
+    where: {
+      companyId_userId: {
+        companyId: doc.batch.companyId,
+        userId: user.id,
+      },
+    },
+  });
+
+  if (!companyUser) {
+    return NextResponse.json({ error: "Unauthorized" }, { status: 403 });
+  }
+
+  // Delete the document
+  await db.documentFile.delete({
+    where: { id },
+  });
+
+  // Update batch file count
+  await db.uploadBatch.update({
+    where: { id: doc.batchId },
+    data: { totalFiles: { decrement: 1 } },
+  });
+
+  // Log deletion
+  await db.auditLog.create({
+    data: {
+      companyId: doc.batch.companyId,
+      companyUserId: companyUser.id,
+      action: "delete_document",
+      resource: "DocumentFile",
+      resourceId: id,
+      details: JSON.stringify({
+        fileName: doc.fileName,
+      }),
+    },
+  });
+
+  return NextResponse.json({ success: true });
+}
+
+/**
  * PATCH /api/docx/documents/[id]
  * Update document extracted data (manual field mapping)
  */
