@@ -24,7 +24,12 @@ import {
   getFileExtension,
   getMimeType,
 } from "@/lib/export";
-import { detectFields, type DetectedField } from "@/lib/smart-fields";
+import {
+  detectFields,
+  detectFieldsFromLayout,
+  type DetectedField,
+  type PositionedPage,
+} from "@/lib/smart-fields";
 import VisualSelector from "./VisualSelector";
 
 interface ExtractedField {
@@ -54,6 +59,9 @@ export default function DocumentDetailPage() {
   const [exporting, setExporting] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
   const [viewMode, setViewMode] = useState<ViewMode>("visual");
+  const [layoutPages, setLayoutPages] = useState<PositionedPage[]>([]);
+  const [layoutLoading, setLayoutLoading] = useState(true);
+  const [layoutError, setLayoutError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchDoc = async () => {
@@ -80,11 +88,30 @@ export default function DocumentDetailPage() {
     fetchDoc();
   }, [docId]);
 
-  // Auto-detected label→value pairs from the extracted text.
-  const detected = useMemo<DetectedField[]>(
-    () => (doc?.extractedText ? detectFields(doc.extractedText) : []),
-    [doc?.extractedText]
-  );
+  // Fetch positioned layout once — powers both the visual selector and the
+  // (more accurate) geometric auto-detection.
+  useEffect(() => {
+    const fetchLayout = async () => {
+      try {
+        const res = await fetch(`/api/docx/documents/${docId}/layout`);
+        if (!res.ok) throw new Error("layout");
+        const data = await res.json();
+        setLayoutPages(data.pages || []);
+      } catch {
+        setLayoutError("Could not load visual preview.");
+      } finally {
+        setLayoutLoading(false);
+      }
+    };
+    fetchLayout();
+  }, [docId]);
+
+  // Prefer geometric detection (position-aware); fall back to text parsing
+  // if the layout couldn't be extracted.
+  const detected = useMemo<DetectedField[]>(() => {
+    if (layoutPages.length > 0) return detectFieldsFromLayout(layoutPages);
+    return doc?.extractedText ? detectFields(doc.extractedText) : [];
+  }, [layoutPages, doc?.extractedText]);
 
   const hasField = (name: string) =>
     fields.some((f) => f.name.toLowerCase() === name.toLowerCase());
@@ -320,7 +347,12 @@ export default function DocumentDetailPage() {
           </div>
 
           {viewMode === "visual" ? (
-            <VisualSelector docId={docId} onAdd={addField} />
+            <VisualSelector
+              pages={layoutPages}
+              loading={layoutLoading}
+              error={layoutError}
+              onAdd={addField}
+            />
           ) : (
             <>
               <div

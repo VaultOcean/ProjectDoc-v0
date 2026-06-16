@@ -107,35 +107,138 @@ export function detectFields(text: string): DetectedField[] {
   return found;
 }
 
-/** Group positioned items into visual rows (by y), each sorted left→right. */
-export function groupRows(items: PositionedItem[]): PositionedItem[][] {
-  const sorted = [...items].sort((a, b) => a.y - b.y || a.x - b.x);
-  const rows: PositionedItem[][] = [];
-  let cur: PositionedItem[] = [];
-  let prevY: number | null = null;
-  for (const it of sorted) {
-    const tol = Math.max((it.h || 10) * 0.6, 4);
-    if (prevY === null || Math.abs(it.y - prevY) <= tol) {
-      cur.push(it);
-    } else {
-      rows.push(cur);
-      cur = [it];
-    }
-    prevY = it.y;
-  }
-  if (cur.length) rows.push(cur);
-  rows.forEach((r) => r.sort((a, b) => a.x - b.x));
-  return rows;
-}
-
 function isLabelToken(s: string): boolean {
   return s.includes(":");
 }
 
 /**
- * Geometric field detection from positioned words. Far more accurate than
- * flat-text parsing for column-layout documents: a label like "Order No:"
- * is paired with the value sitting to its right on the SAME visual row.
+ * Group a page's item indices into visual rows (by y), each sorted left→right.
+ * Returns original indices so callers can map back to page.items.
+ */
+export function groupRowIndices(page: PositionedPage): number[][] {
+  const order = page.items
+    .map((it, idx) => ({ it, idx }))
+    .sort((a, b) => a.it.y - b.it.y || a.it.x - b.it.x);
+
+  const rows: number[][] = [];
+  let cur: number[] = [];
+  let prevY: number | null = null;
+  for (const { it, idx } of order) {
+    const tol = Math.max((it.h || 10) * 0.6, 4);
+    if (prevY === null || Math.abs(it.y - prevY) <= tol) {
+      cur.push(idx);
+    } else {
+      rows.push(cur);
+      cur = [idx];
+    }
+    prevY = it.y;
+  }
+  if (cur.length) rows.push(cur);
+  // Sort each row strictly left→right (y-then-x ordering can interleave items
+  // whose baselines differ slightly within the same visual row).
+  rows.forEach((r) => r.sort((a, b) => page.items[a].x - page.items[b].x));
+  return rows;
+}
+
+export interface RowSegment {
+  label: string | null;
+  value: string;
+  /** Original page-item indices that make up the value (for highlighting). */
+  valueKeys: number[];
+  kind: DetectedField["kind"];
+}
+
+/**
+ * Split one row (array of original item indices) into label→value segments.
+ * Shared by both auto-detection and click-to-pair so they behave identically.
+ */
+export function segmentRow(page: PositionedPage, rowIdx: number[]): RowSegment[] {
+  const colGap = Math.max(page.width * 0.13, 50);
+  const items = page.items;
+  const segs: RowSegment[] = [];
+
+  let i = 0;
+  while (i < rowIdx.length) {
+    const ti = rowIdx[i];
+    const t = items[ti];
+    const ci = t.str.indexOf(":");
+    if (ci >= 0) {
+      const label = t.str.slice(0, ci);
+      const inlineVal = t.str.slice(ci + 1).trim();
+      const valParts: string[] = [];
+      const valueKeys: number[] = [];
+      let prevEnd = t.x + t.w;
+      if (inlineVal) {
+        valParts.push(inlineVal);
+        valueKeys.push(ti);
+      }
+      let j = i + 1;
+      while (j < rowIdx.length && !isLabelToken(items[rowIdx[j]].str)) {
+        const nx = items[rowIdx[j]];
+        if (nx.x - prevEnd > colGap) break;
+        valParts.push(nx.str);
+        valueKeys.push(rowIdx[j]);
+        prevEnd = nx.x + nx.w;
+        j++;
+      }
+      segs.push({
+        label,
+        value: valParts.join(" "),
+        valueKeys,
+        kind: "labeled",
+      });
+      i = j > i ? j : i + 1;
+      continue;
+    }
+    i++;
+  }
+
+  // Line item: text on the left, an amount on the right.
+  if (segs.length === 0 && rowIdx.length >= 2) {
+    const lastIdx = rowIdx[rowIdx.length - 1];
+    const last = items[lastIdx];
+    if (looksLikeAmount(last.str)) {
+      const descParts: string[] = [];
+      let prevEnd = last.x;
+      for (let k = rowIdx.length - 2; k >= 0; k--) {
+        const tok = items[rowIdx[k]];
+        if (prevEnd - (tok.x + tok.w) > colGap) break;
+        descParts.unshift(tok.str);
+        prevEnd = tok.x;
+      }
+      const desc = descParts.join(" ");
+      if (/[A-Za-z]/.test(desc)) {
+        segs.push({
+          label: desc,
+          value: last.str,
+          valueKeys: [lastIdx],
+          kind: "lineItem",
+        });
+      }
+    }
+  }
+
+  return segs;
+}
+
+function acceptField(
+  name: string,
+  value: string,
+  kind: DetectedField["kind"]
+): DetectedField | null {
+  const n = clean(name).replace(/[:\-]+$/, "");
+  const v = clean(value);
+  if (!n || !v) return null;
+  if (n.length > 60 || v.length > 120) return null;
+  if (!/[A-Za-z]/.test(n)) return null;
+  if ((n.match(/\d/g)?.length ?? 0) > 3) return null; // date/page junk labels
+  if (kind === "labeled" && v.split(/\s+/).length > 8) return null; // sentences
+  return { name: n, value: v, kind };
+}
+
+/**
+ * Geometric field detection: pair each label with the value to its right on
+ * the same visual row, never crossing a column-sized gap.
  */
 export function detectFieldsFromLayout(
   pages: PositionedPage[]
@@ -143,79 +246,53 @@ export function detectFieldsFromLayout(
   const found: DetectedField[] = [];
   const seen = new Set<string>();
 
-  const push = (name: string, value: string, kind: DetectedField["kind"]) => {
-    const n = clean(name).replace(/[:\-]+$/, "");
-    const v = clean(value);
-    if (!n || !v) return;
-    if (n.length > 60 || v.length > 120) return;
-    if (!/[A-Za-z]/.test(n)) return;
-    if ((n.match(/\d/g)?.length ?? 0) > 3) return; // skip date/page junk labels
-    // Skip sentence-like values (terms & conditions, footnotes), not real fields.
-    if (kind === "labeled" && v.split(/\s+/).length > 8) return;
-    const key = n.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
-    found.push({ name: n, value: v, kind });
-  };
-
   for (const page of pages) {
-    // Tokens further apart than this belong to a different column, so a value
-    // never reaches across the gap into an unrelated column. Tuned so a value
-    // in the adjacent column still pairs, but a far column does not.
-    const colGap = Math.max(page.width * 0.13, 50);
-
-    for (const row of groupRows(page.items)) {
-      let i = 0;
-      let pairedSomething = false;
-
-      while (i < row.length) {
-        const t = row[i];
-        const ci = t.str.indexOf(":");
-        if (ci >= 0) {
-          const label = t.str.slice(0, ci);
-          const inlineVal = t.str.slice(ci + 1).trim();
-          const valParts: string[] = [];
-          let prevEnd = t.x + t.w;
-          if (inlineVal) valParts.push(inlineVal);
-          // Gather the value from tokens to the right, stopping at the next
-          // label or at a column-sized horizontal gap.
-          let j = i + 1;
-          while (j < row.length && !isLabelToken(row[j].str)) {
-            if (row[j].x - prevEnd > colGap) break;
-            valParts.push(row[j].str);
-            prevEnd = row[j].x + row[j].w;
-            j++;
-          }
-          const value = valParts.join(" ");
-          if (value && !value.includes(":")) {
-            push(label, value, "labeled");
-            pairedSomething = true;
-          }
-          i = j > i ? j : i + 1;
-          continue;
-        }
-        i++;
-      }
-
-      // Line item: text on the left, an amount on the right — pair the amount
-      // with only the adjacent text (not the whole row).
-      if (!pairedSomething && row.length >= 2) {
-        const last = row[row.length - 1];
-        if (looksLikeAmount(last.str)) {
-          const descParts: string[] = [];
-          let prevEnd = last.x;
-          for (let k = row.length - 2; k >= 0; k--) {
-            const tok = row[k];
-            if (prevEnd - (tok.x + tok.w) > colGap) break;
-            descParts.unshift(tok.str);
-            prevEnd = tok.x;
-          }
-          const desc = descParts.join(" ");
-          if (/[A-Za-z]/.test(desc)) push(desc, last.str, "lineItem");
-        }
+    for (const rowIdx of groupRowIndices(page)) {
+      for (const seg of segmentRow(page, rowIdx)) {
+        const f = acceptField(seg.label ?? "", seg.value, seg.kind);
+        if (!f) continue;
+        const key = f.name.toLowerCase();
+        if (seen.has(key)) continue;
+        seen.add(key);
+        found.push(f);
       }
     }
   }
 
   return found;
+}
+
+/**
+ * Given a clicked word (page index + item index), return the field it belongs
+ * to: the label→value segment containing it, with the keys to highlight.
+ * Powers one-click smart capture in the visual selector.
+ */
+export function pairAtPoint(
+  page: PositionedPage,
+  itemIndex: number
+): { name: string; value: string; keys: number[] } | null {
+  for (const rowIdx of groupRowIndices(page)) {
+    if (!rowIdx.includes(itemIndex)) continue;
+    const segs = segmentRow(page, rowIdx);
+    // Prefer the segment whose value contains the clicked token.
+    let seg = segs.find((s) => s.valueKeys.includes(itemIndex));
+    // Otherwise, if the user clicked the label token itself, use that segment.
+    if (!seg) {
+      const t = page.items[itemIndex];
+      const ci = t.str.indexOf(":");
+      if (ci >= 0) {
+        const labelText = t.str.slice(0, ci);
+        seg = segs.find((s) => s.label === labelText);
+      }
+    }
+    if (seg) {
+      return {
+        name: clean(seg.label ?? "").replace(/[:\-]+$/, ""),
+        value: clean(seg.value),
+        keys: seg.valueKeys,
+      };
+    }
+    return null;
+  }
+  return null;
 }
