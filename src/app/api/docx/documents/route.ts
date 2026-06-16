@@ -2,6 +2,17 @@ import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
 import { extractPdfText } from "@/lib/pdf-extract";
+import { rateLimitAsync, clientIp } from "@/lib/ratelimit";
+
+// Upload limits — keep in sync with the client hint (25MB).
+const MAX_FILE_BYTES = 25 * 1024 * 1024;
+const ALLOWED_TYPES = new Set([
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/gif",
+  "image/webp",
+]);
 
 /**
  * POST /api/docx/documents
@@ -10,6 +21,14 @@ import { extractPdfText } from "@/lib/pdf-extract";
 export async function POST(req: Request) {
   const user = await getCurrentUser();
   if (!user) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+
+  // Throttle uploads per user (covers automated abuse / accidental loops).
+  if (await rateLimitAsync(`upload:${user.id}:${clientIp(req)}`, 30, 60_000)) {
+    return NextResponse.json(
+      { error: "Too many uploads. Please slow down." },
+      { status: 429 }
+    );
+  }
 
   try {
     const formData = await req.formData();
@@ -22,6 +41,20 @@ export async function POST(req: Request) {
       return NextResponse.json(
         { error: "file and batchId required" },
         { status: 400 }
+      );
+    }
+
+    // Validate type and size before reading the whole file into memory.
+    if (!ALLOWED_TYPES.has(file.type)) {
+      return NextResponse.json(
+        { error: `Unsupported file type: ${file.type || "unknown"}` },
+        { status: 415 }
+      );
+    }
+    if (file.size > MAX_FILE_BYTES) {
+      return NextResponse.json(
+        { error: "File too large (max 25MB)." },
+        { status: 413 }
       );
     }
 
