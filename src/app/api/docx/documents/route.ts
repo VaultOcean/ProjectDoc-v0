@@ -1,11 +1,11 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { extractPdfText } from "@/lib/pdf-extract";
 
 /**
  * POST /api/docx/documents
- * Upload a document file to a batch
- * Note: Client must extract text from PDF before sending
+ * Upload a document file to a batch and extract its text server-side.
  */
 export async function POST(req: Request) {
   const user = await getCurrentUser();
@@ -15,7 +15,8 @@ export async function POST(req: Request) {
     const formData = await req.formData();
     const file = formData.get("file") as File;
     const batchId = formData.get("batchId") as string;
-    const extractedText = formData.get("extractedText") as string || "";
+    // Client may pass pre-extracted text (e.g. OCR); otherwise we extract here.
+    const clientText = (formData.get("extractedText") as string) || "";
 
     if (!file || !batchId) {
       return NextResponse.json(
@@ -50,6 +51,19 @@ export async function POST(req: Request) {
     const buffer = await file.arrayBuffer();
     const rawContent = Buffer.from(buffer).toString("base64");
 
+    // Extract text. Prefer server-side extraction for PDFs (reliable, no
+    // browser worker needed); fall back to client-supplied text.
+    let extractedText = clientText;
+    if (file.type === "application/pdf") {
+      const serverText = await extractPdfText(buffer);
+      if (serverText.trim().length > 0) {
+        extractedText = serverText;
+      } else if (!extractedText) {
+        extractedText =
+          "[No selectable text found — this looks like a scanned/image PDF. Paste the content manually to map fields.]";
+      }
+    }
+
     // Create document file record
     const docFile = await db.documentFile.create({
       data: {
@@ -82,7 +96,7 @@ export async function POST(req: Request) {
           fileName: file.name,
           fileSize: file.size,
           batchId,
-          textLength: extractedText.length,
+          textLength: extractedText?.length || 0,
         }),
       },
     });

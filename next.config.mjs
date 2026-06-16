@@ -39,6 +39,8 @@ const securityHeaders = [
 const nextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
+  // Keep pdfjs out of the server bundle so its legacy build loads natively.
+  serverExternalPackages: ["pdfjs-dist"],
   async headers() {
     return [
       {
