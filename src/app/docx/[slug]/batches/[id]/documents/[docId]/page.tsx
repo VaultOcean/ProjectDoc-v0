@@ -25,6 +25,7 @@ import {
   getMimeType,
 } from "@/lib/export";
 import { detectFields, type DetectedField } from "@/lib/smart-fields";
+import VisualSelector from "./VisualSelector";
 
 interface ExtractedField {
   name: string;
@@ -33,6 +34,8 @@ interface ExtractedField {
   encrypted: boolean;
   isPii: boolean;
 }
+
+type ViewMode = "text" | "visual";
 
 export default function DocumentDetailPage() {
   const router = useRouter();
@@ -50,6 +53,7 @@ export default function DocumentDetailPage() {
   const [fieldValue, setFieldValue] = useState("");
   const [exporting, setExporting] = useState(false);
   const [showExportMenu, setShowExportMenu] = useState(false);
+  const [viewMode, setViewMode] = useState<ViewMode>("visual");
 
   useEffect(() => {
     const fetchDoc = async () => {
@@ -85,15 +89,16 @@ export default function DocumentDetailPage() {
   const hasField = (name: string) =>
     fields.some((f) => f.name.toLowerCase() === name.toLowerCase());
 
-  const addField = (name: string, value: string) => {
+  const addField = (name: string, value: string): boolean => {
     const n = name.trim();
     const v = value.trim();
-    if (!n || !v) return;
-    if (hasField(n)) return;
+    if (!n || !v) return false;
+    if (hasField(n)) return false;
     setFields((prev) => [
       ...prev,
       { name: n, value: v, verified: false, encrypted: false, isPii: false },
     ]);
+    return true;
   };
 
   const toggleDetected = (d: DetectedField) => {
@@ -286,18 +291,49 @@ export default function DocumentDetailPage() {
       </div>
 
       <div className="grid gap-6 lg:grid-cols-2">
-        {/* Left: Document Preview */}
+        {/* Left: Document Preview (Visual / Text) */}
         <div className="rounded-xl border border-zinc-800 bg-zinc-900/50 p-6">
-          <h2 className="font-semibold text-zinc-100 mb-4">Document Text</h2>
-          <div
-            className="rounded-lg border border-zinc-700 bg-zinc-950 p-4 min-h-[28rem] max-h-[28rem] overflow-auto text-sm text-zinc-300 whitespace-pre-wrap break-words select-text cursor-text"
-            onMouseUp={handleSelectText}
-          >
-            {doc.extractedText || "No text extracted"}
+          <div className="flex items-center justify-between mb-4">
+            <h2 className="font-semibold text-zinc-100">Document Preview</h2>
+            <div className="inline-flex rounded-lg border border-zinc-700 bg-zinc-950 p-0.5 text-xs">
+              <button
+                onClick={() => setViewMode("visual")}
+                className={`px-3 py-1 rounded-md font-semibold transition ${
+                  viewMode === "visual"
+                    ? "bg-tide text-black"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                Visual
+              </button>
+              <button
+                onClick={() => setViewMode("text")}
+                className={`px-3 py-1 rounded-md font-semibold transition ${
+                  viewMode === "text"
+                    ? "bg-tide text-black"
+                    : "text-zinc-400 hover:text-zinc-200"
+                }`}
+              >
+                Text
+              </button>
+            </div>
           </div>
-          <p className="mt-3 text-xs text-zinc-600">
-            Highlight any text above to drop it into the value box →
-          </p>
+
+          {viewMode === "visual" ? (
+            <VisualSelector docId={docId} onAdd={addField} />
+          ) : (
+            <>
+              <div
+                className="rounded-lg border border-zinc-700 bg-zinc-950 p-4 min-h-[28rem] max-h-[28rem] overflow-auto text-sm text-zinc-300 whitespace-pre-wrap break-words select-text cursor-text"
+                onMouseUp={handleSelectText}
+              >
+                {doc.extractedText || "No text extracted"}
+              </div>
+              <p className="mt-3 text-xs text-zinc-600">
+                Highlight any text above to drop it into the value box →
+              </p>
+            </>
+          )}
         </div>
 
         {/* Right: Smart detection + manual add */}
