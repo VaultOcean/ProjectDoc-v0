@@ -79,32 +79,14 @@ export default function BatchDetailPage() {
           const uint8Array = new Uint8Array(buffer);
           const pdfjsLib = await import("pdfjs-dist");
 
-          // Try multiple worker sources
-          const workerSources = [
-            `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`,
-            `https://cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`,
-            `/pdf.worker.min.js`, // Local fallback
-          ];
-
-          let workerLoaded = false;
-          for (const src of workerSources) {
-            try {
-              pdfjsLib.GlobalWorkerOptions.workerSrc = src;
-              // Try to load a test document to verify worker works
-              const testPdf = await pdfjsLib.getDocument({ data: new Uint8Array([]) }).promise.catch(() => null);
-              workerLoaded = true;
-              break;
-            } catch (e) {
-              continue;
-            }
-          }
+          // Set worker source
+          pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
 
           const pdf = await pdfjsLib.getDocument({ data: uint8Array }).promise;
           const textChunks: string[] = [];
 
-          // Extract text from all pages
+          // Try to extract text from all pages
           for (let i = 1; i <= Math.min(pdf.numPages, 50); i++) {
-            // Limit to first 50 pages for performance
             try {
               const page = await pdf.getPage(i);
               const textContent = await page.getTextContent();
@@ -113,24 +95,71 @@ export default function BatchDetailPage() {
                 .filter((s: string) => s.length > 0)
                 .join(" ");
 
-              if (pageText.length > 0) {
+              if (pageText.length > 10) {
                 textChunks.push(`[Page ${i}]\n${pageText}`);
               }
             } catch (pageError) {
-              console.warn(`Failed to extract page ${i}:`, pageError);
+              console.warn(`Failed to extract text from page ${i}:`, pageError);
+            }
+          }
+
+          // If no text extracted, try OCR on first few pages
+          if (textChunks.length === 0) {
+            console.log("No text found - attempting OCR on scanned PDF...");
+            alert("PDF appears to be scanned. Extracting text via OCR (this may take 30-60 seconds)...");
+
+            try {
+              const TesseractModule = await import("tesseract.js");
+              const Tesseract = TesseractModule.default;
+              const worker = await Tesseract.createWorker();
+
+              for (let i = 1; i <= Math.min(pdf.numPages, 3); i++) {
+                // Limit OCR to first 3 pages for performance
+                try {
+                  const page = await pdf.getPage(i);
+                  const viewport = page.getViewport({ scale: 2 });
+                  const canvas = document.createElement("canvas");
+                  canvas.width = viewport.width;
+                  canvas.height = viewport.height;
+
+                  const context = canvas.getContext("2d");
+                  if (!context) throw new Error("Could not get canvas context");
+
+                  await page.render({
+                    canvasContext: context,
+                    viewport: viewport,
+                  } as any).promise;
+
+                  // Run OCR on this page
+                  const imageData = canvas.toDataURL("image/png");
+                  const result = await worker.recognize(imageData);
+                  const ocrText = result.data.text.trim();
+
+                  if (ocrText.length > 20) {
+                    textChunks.push(`[Page ${i} - OCR]\n${ocrText}`);
+                  }
+                } catch (ocrPageError) {
+                  console.warn(`OCR failed for page ${i}:`, ocrPageError);
+                }
+              }
+
+              await worker.terminate();
+            } catch (ocrError) {
+              console.warn("OCR extraction failed:", ocrError);
+              extractedText = "[Scanned PDF - OCR extraction failed]";
             }
           }
 
           extractedText =
             textChunks.length > 0
               ? textChunks.join("\n\n")
-              : "[PDF found but no text extracted - may be image-only PDF]";
+              : "[PDF found but could not extract text - file may be corrupted or heavily image-based]";
         } catch (pdfError) {
           console.warn("PDF extraction error:", pdfError);
-          extractedText = "[PDF text extraction failed - file may be corrupted or image-only]";
+          extractedText = "[PDF extraction failed - file may be corrupted]";
         }
       } else if (file.type.startsWith("image/")) {
-        extractedText = "[Image - OCR coming soon]";
+        extractedText = "[Image - OCR support coming soon]";
       }
 
       const formData = new FormData();
