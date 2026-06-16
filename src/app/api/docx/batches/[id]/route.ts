@@ -31,6 +31,9 @@ export async function GET(
           createdAt: true,
         },
       },
+      _count: {
+        select: { documents: true },
+      },
     },
   });
 
