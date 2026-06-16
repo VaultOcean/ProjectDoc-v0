@@ -1,0 +1,736 @@
+// Vault Ocean data model.
+// Dev uses SQLite (zero infra). For production, switch `provider` to
+// "postgresql" and point DATABASE_URL at a managed Postgres (Neon/Supabase).
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String    @id @default(cuid())
+  email           String    @unique
+  passwordHash    String
+  handle          String    @unique
+  displayName     String
+  bio             String    @default("")
+  fathoms         Int       @default(0)
+  streakDays      Int       @default(0)
+  lastActiveOn    DateTime?
+  emailVerifiedAt DateTime?
+  createdAt       DateTime  @default(now())
+
+  solves              Solve[]
+  activity            Activity[]
+  scans               Scan[]
+  docs                Doc[]
+  comments            Comment[]
+  likes               Like[]
+  bookmarks           Bookmark[]
+  notifications       Notification[]
+  following           Follow[]       @relation("Follower")
+  followers           Follow[]       @relation("Following")
+  posts               Post[]
+  verificationTokens  VerificationToken[]
+  targets             Target[]
+  vulnReports         VulnReport[]
+  bountySubmissions   BountySubmission[]
+  tenantConfig        TenantConfig?
+  docxSessions        DocxSession[]
+  docxTemplates       DocxTemplate[]
+  companyUsers        CompanyUser[]       @relation("CompanyUser")
+  vaultOceanAccess    VaultOceanAccess?
+}
+
+// ── PRODUCTS & SUBSCRIPTIONS ────────────────────────────────────────────────
+// Multi-product model: Docx, PentX, FILEx, AssetxOcean, etc. are separate products.
+// Each company purchases products. Only VaultOcean superadmin accesses all.
+
+model Product {
+  id          String   @id @default(cuid())
+  slug        String   @unique // "docx" | "pentx" | "filex" | "assetxocean"
+  name        String   @unique // "Docx" | "PentX" | "FILEx" | "AssetxOcean"
+  description String   @default("")
+
+  // Pricing tiers: "free" | "starter" | "pro" | "enterprise"
+  basePlan    String   @default("starter")
+
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+
+  subscriptions ProductSubscription[]
+}
+
+model ProductSubscription {
+  id          String   @id @default(cuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  productId   String
+  product     Product  @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  plan        String   @default("starter") // "free" | "starter" | "pro" | "enterprise"
+  status      String   @default("active")  // "active" | "suspended" | "cancelled"
+
+  // Billing
+  licensedSeats Int    @default(5)
+  billingCycle  String @default("monthly") // "monthly" | "annual"
+  renewalDate   DateTime?
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([companyId, productId])
+  @@index([companyId, status])
+}
+
+// VaultOcean access control — only superadmin by default
+model VaultOceanAccess {
+  id        String   @id @default(cuid())
+  userId    String   @unique
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  isAdmin   Boolean  @default(false) // VaultOcean superadmin
+  canAccessAllModules Boolean @default(false)
+
+  // Can manage companies, products, billing
+  canManageCompanies Boolean @default(false)
+  canManageBilling   Boolean @default(false)
+
+  grantedAt DateTime @default(now())
+  revokedAt DateTime?
+
+  @@index([isAdmin])
+}
+
+// ── AssetxOcean Tenant Connector ──────────────────────────────────────────────
+// Each user/org configures their own Eagle OCR server.
+// VaultOcean stores the endpoint + API key, approves the registration,
+// then proxies extraction requests to the tenant's server — no data or
+// model runs on VaultOcean infrastructure.
+model TenantConfig {
+  id             String   @id @default(cuid())
+  userId         String   @unique
+  user           User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  orgName        String   @default("")
+  serverUrl      String   @default("")   // Eagle server base URL e.g. https://eagle.acme.internal
+  apiKey         String   @default("")   // Bearer token for the Eagle server (encrypted in prod)
+  maxFileSizeMb  Int      @default(25)
+
+  // Approval lifecycle: pending → approved → active | suspended
+  status         String   @default("pending") // pending | approved | active | suspended
+  adminNotes     String   @default("")         // internal VaultOcean admin notes
+
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@index([status])
+}
+
+model VerificationToken {
+  id        String    @id @default(cuid())
+  userId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token     String    @unique @default(cuid())
+  expiresAt DateTime
+  usedAt    DateTime?
+  createdAt DateTime  @default(now())
+
+  @@index([userId])
+}
+
+model Comment {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  body       String
+  targetType String   // "writeup" | "doc"
+  targetId   String   // writeup slug or doc id
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([targetType, targetId, createdAt])
+  @@index([userId])
+}
+
+model Like {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetType String   // "writeup" | "doc"
+  targetId   String
+  createdAt  DateTime @default(now())
+
+  @@unique([userId, targetType, targetId])
+  @@index([targetType, targetId])
+}
+
+// Follow system
+model Follow {
+  id          String   @id @default(cuid())
+  followerId  String
+  follower    User     @relation("Follower", fields: [followerId], references: [id], onDelete: Cascade)
+  followingId String
+  following   User     @relation("Following", fields: [followingId], references: [id], onDelete: Cascade)
+  createdAt   DateTime @default(now())
+
+  @@unique([followerId, followingId])
+  @@index([followingId])
+}
+
+// Bookmarks — save any writeup or doc for later
+model Bookmark {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetType String   // "writeup" | "doc" | "post"
+  targetId   String
+  createdAt  DateTime @default(now())
+
+  @@unique([userId, targetType, targetId])
+  @@index([userId, createdAt])
+}
+
+// In-app notifications
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind      String   // "comment" | "like" | "follow" | "solve"
+  body      String   // human-readable message
+  link      String?  // where to navigate on click
+  read      Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  @@index([userId, read, createdAt])
+}
+
+// User-written posts (Medium-style) — separate from seeded Writeups
+model Post {
+  id          String   @id @default(cuid())
+  userId      String
+  author      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  slug        String   @unique
+  title       String
+  summary     String   @default("")
+  body        String   @default("")   // markdown / TipTap JSON
+  tags        String   @default("[]") // JSON string[]
+  status      String   @default("draft") // draft | published | under_review
+  readMinutes Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([userId, updatedAt])
+  @@index([status, createdAt])
+}
+
+model Challenge {
+  id          String  @id @default(cuid())
+  slug        String  @unique
+  title       String
+  category    String
+  difficulty  String
+  fathoms     Int
+  prompt      String  @default("") // short one-liner shown on the card
+  description String  @default("") // full briefing on the detail page (markdown-ish)
+  hints       String  @default("[]") // JSON array of hint strings
+  files       String  @default("[]") // JSON array of { name, url }
+  kind        String  @default("download") // download | web | static — how it's solved
+  author      String  @default("VaultOcean")
+  active      Boolean @default(true)
+  flagHash    String // sha256 hex of the flag — the plaintext never lives in code or DB
+  createdAt   DateTime @default(now())
+
+  solves Solve[]
+}
+
+model Solve {
+  id          String   @id @default(cuid())
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  challenge   Challenge @relation(fields: [challengeId], references: [id], onDelete: Cascade)
+  challengeId String
+  createdAt   DateTime @default(now())
+
+  @@unique([userId, challengeId])
+}
+
+model Writeup {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  title       String
+  summary     String
+  body        String   @default("")
+  category    String
+  severity    String
+  author      String
+  readMinutes Int
+  date        String
+  createdAt   DateTime @default(now())
+}
+
+model Tool {
+  id       String @id @default(cuid())
+  slug     String @unique
+  name     String
+  summary  String
+  detail   String
+  language String
+  repo     String
+  status   String
+  tags     String // comma-separated; split in the data layer
+  sort     Int    @default(0)
+}
+
+model Doc {
+  id          String   @id @default(cuid())
+  author      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId      String
+  slug        String // unique per author
+  title       String   @default("Untitled")
+  summary     String   @default("")
+  content     String   @default("") // markdown
+  visibility  String   @default("private") // private (notion-style) | public (blog post)
+  readMinutes Int      @default(1)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, slug])
+  @@index([userId, updatedAt])
+  @@index([visibility, updatedAt])
+}
+
+model Scan {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  target    String // normalized hostname that was scanned
+  grade     String // A+ … F
+  score     Int // 0..100
+  result    String // JSON: { headers, csp, dns, subdomains, findings, finalUrl }
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model Activity {
+  id        String   @id @default(cuid())
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId    String
+  kind      String // read | solve | publish | contribute
+  ref       String?
+  fathoms   Int      @default(0)
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+// ── Recon Target Workspace ────────────────────────────────────────────────────
+model Target {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  domain    String
+  name      String   @default("")
+  program   String   @default("")   // HackerOne/Bugcrowd program handle
+  platform  String   @default("")   // HackerOne | Bugcrowd | Intigriti | custom
+  scope     String   @default("[]") // JSON string[]
+  outScope  String   @default("[]") // JSON string[]
+  notes     String   @default("")
+  status    String   @default("active") // active | archived
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  recons      TargetRecon[]
+  reports     VulnReport[]
+  submissions BountySubmission[]
+
+  @@unique([userId, domain])
+  @@index([userId, updatedAt])
+}
+
+model TargetRecon {
+  id        String   @id @default(cuid())
+  targetId  String
+  target    Target   @relation(fields: [targetId], references: [id], onDelete: Cascade)
+  kind      String   // subdomains | dns | ip | wayback | headers | scan
+  data      String   // JSON result
+  createdAt DateTime @default(now())
+
+  @@index([targetId, kind])
+}
+
+// ── Vulnerability Reports ─────────────────────────────────────────────────────
+model VulnReport {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetId     String?
+  target       Target?  @relation(fields: [targetId], references: [id], onDelete: SetNull)
+  title        String
+  severity     String   @default("medium") // critical | high | medium | low | info
+  cvssVector   String   @default("")
+  cvssScore    Float    @default(0)
+  endpoint     String   @default("")
+  parameter    String   @default("")
+  poc          String   @default("") // proof-of-concept steps (markdown)
+  impact       String   @default("")
+  remediation  String   @default("")
+  httpRequest  String   @default("")
+  httpResponse String   @default("")
+  status       String   @default("draft") // draft | submitted | triaged | resolved | informative | duplicate | n/a
+  platform     String   @default("") // HackerOne | Bugcrowd | Intigriti | custom
+  programName  String   @default("")
+  bountyUSD    Float?
+  submittedAt  DateTime?
+  resolvedAt   DateTime?
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+
+  @@index([userId, createdAt])
+  @@index([targetId])
+  @@index([status])
+}
+
+// ── Bounty Earnings Tracker ───────────────────────────────────────────────────
+// ── Docx — Document Intelligence ─────────────────────────────────────────────
+// User uploads any document (PDF, image, text, JSON, XML).
+// Eagle OCR server extracts raw text + suggests structured fields.
+// User maps fields, marks encryption/PII, builds a table, exports or stores.
+model DocxSession {
+  id          String      @id @default(cuid())
+  userId      String
+  user        User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name        String      @default("Untitled document")
+  fileName    String      @default("")
+  fileType    String      @default("") // mime type
+  fileSizeMb  Float       @default(0)
+  rawText     String      @default("") // OCR-extracted full text (for preview)
+  wordCount   Int         @default(0)
+  pageCount   Int         @default(0)
+
+  // Lifecycle: uploaded → extracting → ready | error
+  status      String      @default("uploaded")
+  errorMsg    String      @default("")
+
+  // Sharing
+  visibility  String      @default("private") // private | org
+  shareToken  String?     @unique
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  fields      DocxField[]
+
+  @@index([userId, updatedAt])
+  @@index([shareToken])
+}
+
+model DocxField {
+  id          String      @id @default(cuid())
+  sessionId   String
+  session     DocxSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+
+  name        String                       // field label (user-editable)
+  value       String      @default("")     // extracted / user-typed value
+  dataType    String      @default("text") // text | number | date | ip | url | email | boolean | json
+  encrypted   Boolean     @default(false)
+  required    Boolean     @default(false)
+  isPii       Boolean     @default(false)
+  position    Int         @default(0)      // display order
+  source      String      @default("manual") // eagle | manual | template
+  confidence  Float       @default(0)     // 0–1 from Eagle
+
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+
+  @@index([sessionId, position])
+}
+
+model DocxTemplate {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  name       String
+  // JSON: [{name, dataType, required, encrypted, isPii}]
+  fieldDefs  String   @default("[]")
+  useCount   Int      @default(0)
+
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
+}
+
+model BountySubmission {
+  id          String    @id @default(cuid())
+  userId      String
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  targetId    String?
+  target      Target?   @relation(fields: [targetId], references: [id], onDelete: SetNull)
+  title       String
+  platform    String    // HackerOne | Bugcrowd | Intigriti | YesWeHack | SynAck | custom
+  program     String
+  severity    String    // critical | high | medium | low | info
+  status      String    @default("submitted") // submitted | triaged | resolved | informative | duplicate | n/a
+  bountyUSD   Float?
+  submittedAt DateTime  @default(now())
+  resolvedAt  DateTime?
+  notes       String    @default("")
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  @@index([userId, submittedAt])
+}
+
+// ── DOCX v2: Enterprise Document Extraction ────────────────────────────────
+// Multi-tenant: each Company is completely isolated.
+// No OCR server needed — manual field selection from preview.
+// Admins define templates, teams upload batches, extract to configured storage.
+// RBAC: hierarchical admin delegation with granular permissions per resource.
+
+// ── RBAC Models ────────────────────────────────────────────────────────────
+// Role hierarchy: superadmin > admin > manager > lead > member > viewer
+// Permissions: upload | read | write | full | view (view = read-only)
+// Scope: per DocumentType, per UploadBatch, per DocumentFile
+
+model Role {
+  id        String   @id @default(cuid())
+  name      String   @unique // "superadmin" | "admin" | "manager" | "lead" | "member" | "viewer"
+  level     Int      // 0=superadmin, 1=admin, 2=manager, 3=lead, 4=member, 5=viewer
+  desc      String   @default("")
+
+  // JSON of default permissions: { upload: bool, read: bool, write: bool, view: bool }
+  defaultPermissions String @default("{\"read\":true,\"view\":true}")
+
+  createdAt DateTime @default(now())
+
+  companyUsers CompanyUser[]
+}
+
+model CompanyUser {
+  id        String   @id @default(cuid())
+  companyId String
+  company   Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation("CompanyUser", fields: [userId], references: [id], onDelete: Cascade)
+
+  // Primary role in this company
+  roleId    String
+  role      Role     @relation(fields: [roleId], references: [id], onDelete: Restrict)
+
+  // Who invited/manages this user (admin who created this user)
+  managedByUserId String?
+
+  // Is this user active?
+  status    String   @default("active") // active | suspended | pending_invite
+  inviteToken String? @unique // for email invites
+  inviteExpiresAt DateTime?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  permissions UserPermission[]
+  batches     UploadBatch[]     // batches created by this user
+  auditLogs   AuditLog[]
+
+  @@unique([companyId, userId])
+  @@index([companyId, roleId])
+  @@index([status])
+}
+
+// Granular permissions: override default role permissions per user per resource
+model UserPermission {
+  id              String   @id @default(cuid())
+  companyUserId   String
+  companyUser     CompanyUser @relation(fields: [companyUserId], references: [id], onDelete: Cascade)
+
+  resourceType    String   // "DocumentType" | "UploadBatch" | "DocumentFile"
+  resourceId      String   // ID of the resource (e.g., documentTypeId)
+
+  // Specific permissions for this user on this resource
+  canUpload       Boolean  @default(false)
+  canRead         Boolean  @default(false)
+  canWrite        Boolean  @default(false)
+  canDelete       Boolean  @default(false)
+  canExport       Boolean  @default(false)
+  canManageUsers  Boolean  @default(false) // can assign perms to others on this resource
+
+  grantedByUserId String   // who granted these permissions
+  grantedAt       DateTime @default(now())
+
+  @@unique([companyUserId, resourceType, resourceId])
+  @@index([companyUserId, resourceType])
+}
+
+// ── end RBAC ────────────────────────────────────────────────────────────
+
+model Company {
+  id              String   @id @default(cuid())
+  name            String   @unique
+  displayName     String   @default("")
+  slug            String   @unique
+
+  // Primary product this company uses (company is isolated to one product initially)
+  // Future: can expand to multi-product
+  primaryProduct  String   @default("docx") // "docx" | "pentx" | "filex" etc.
+
+  // Billing & subscription
+  status          String   @default("active") // active | suspended | trial | onboarding
+  tier            String   @default("starter") // starter | pro | enterprise (per product)
+
+  // Docx-specific limits
+  maxTeamSize     Int      @default(5)
+  maxBatches      Int      @default(10)
+  maxDocsPerBatch Int      @default(100)
+  maxStorageGb    Int      @default(100)
+
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  // Relations
+  users              CompanyUser[]
+  subscriptions      ProductSubscription[]
+  documentTypes      DocumentType[]
+  storageBackends    StorageBackend[]
+  uploadBatches      UploadBatch[]
+  auditLogs          AuditLog[]
+
+  @@index([status])
+  @@index([primaryProduct])
+}
+
+model DocumentType {
+  id          String   @id @default(cuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  
+  name        String   // "Purchase Bill", "Invoice", "Receipt"
+  slug        String   // "purchase_bill"
+  description String   @default("")
+  
+  // JSON: [{ name: "subtotal", type: "currency", position: 0 }, ...]
+  fieldDefs   String   @default("[]")
+  
+  storageBackendId String?
+  storageBackend  StorageBackend? @relation(fields: [storageBackendId], references: [id], onDelete: SetNull)
+  
+  sampleDocUrl String?  // URL or base64 of the sample doc used to define this type
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  batches UploadBatch[]
+
+  @@unique([companyId, slug])
+  @@index([companyId])
+}
+
+model StorageBackend {
+  id          String   @id @default(cuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+  
+  name        String   // "Main Oracle", "Backup S3"
+  type        String   // "postgresql" | "oracle" | "mysql" | "mongodb" | "s3" | "gcs"
+  
+  // Encrypted connection details (JSON string)
+  // For DB: { host, port, database, username, password }
+  // For S3/GCS: { bucket, region, access_key, secret_key }
+  configEncrypted String
+  
+  testPassed  Boolean  @default(false)
+  testedAt    DateTime?
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  documentTypes DocumentType[]
+  batches       UploadBatch[]
+
+  @@unique([companyId, name])
+  @@index([companyId])
+}
+
+model UploadBatch {
+  id              String   @id @default(cuid())
+  companyId       String
+  company         Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  createdByUserId String
+  createdByUser   CompanyUser @relation(fields: [createdByUserId], references: [id], onDelete: Restrict)
+
+  documentTypeId  String
+  documentType    DocumentType @relation(fields: [documentTypeId], references: [id], onDelete: Cascade)
+
+  storageBackendId String
+  storageBackend  StorageBackend @relation(fields: [storageBackendId], references: [id], onDelete: Cascade)
+
+  name            String   // "May 2025 Purchase Bills", user-friendly batch name
+  status          String   @default("uploading") // uploading | ready | processing | completed | failed
+
+  totalFiles      Int      @default(0)
+  extractedFiles  Int      @default(0)
+  failedFiles     Int      @default(0)
+  errorMsg        String   @default("")
+
+  exportedAt      DateTime?
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  documents DocumentFile[]
+
+  @@index([companyId])
+  @@index([createdByUserId])
+  @@index([status])
+}
+
+model DocumentFile {
+  id          String   @id @default(cuid())
+  batchId     String
+  batch       UploadBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  
+  fileName    String
+  fileType    String   // mime type
+  fileSizeKb  Int
+  
+  // Raw file content (base64 or text)
+  rawContent  String   @db.Text
+  
+  status      String   @default("pending") // pending | extracted | verified | failed
+  
+  // JSON: { "subtotal": { value: "100.50", verified: false }, ... }
+  extractedData String @default("{}")
+  
+  errorMsg    String   @default("")
+  
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([batchId, status])
+}
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  companyId   String
+  company     Company  @relation(fields: [companyId], references: [id], onDelete: Cascade)
+
+  action      String   // "create_document_type" | "create_batch" | "extract_document" | "export_batch" | "update_storage"
+  resource    String   // "DocumentType" | "UploadBatch" | "DocumentFile"
+  resourceId  String
+
+  companyUserId String
+  companyUser   CompanyUser @relation(fields: [companyUserId], references: [id], onDelete: Restrict)
+
+  details     String   @default("") // JSON of what changed
+  createdAt   DateTime @default(now())
+
+  @@index([companyId, createdAt])
+  @@index([companyUserId, createdAt])
+}
