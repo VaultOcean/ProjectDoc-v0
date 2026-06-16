@@ -74,7 +74,7 @@ export default function BatchDetailPage() {
     formData.append("batchId", batchId);
 
     try {
-      const res = await fetch("/api/docx/documents/upload", {
+      const res = await fetch("/api/docx/documents", {
         method: "POST",
         body: formData,
       });
