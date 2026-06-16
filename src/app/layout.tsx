@@ -7,6 +7,7 @@ import { CommandPalette } from "@/components/command-palette";
 import { SiteChrome } from "@/components/site-chrome";
 import { SmoothScroll } from "@/components/smooth-scroll";
 import { getCurrentUser } from "@/lib/auth";
+import { getEntitledTools } from "@/lib/vault-ocean";
 
 const sans = Inter({
   subsets: ["latin"],
@@ -76,6 +77,7 @@ export default async function RootLayout({
   const navUser = user
     ? { handle: user.handle, streakDays: user.streakDays, fathoms: user.fathoms }
     : null;
+  const entitledTools = user ? await getEntitledTools(user.id) : [];
 
   return (
     <html lang="en" className={`${sans.variable} ${mono.variable} ${display.variable} ${serif.variable}`}>
@@ -92,6 +94,7 @@ export default async function RootLayout({
           palette={<CommandPalette handle={navUser?.handle ?? null} loggedIn={!!user} />}
           footer={<SiteFooter />}
           user={navUser}
+          entitledTools={entitledTools}
         >
           {children}
         </SiteChrome>

@@ -138,7 +138,13 @@ function NavSection({
 }
 
 /* ── AppSidebar ─────────────────────────────────────────────────────────────── */
-function AppSidebar({ user }: { user: NonNullable<NavUser> }) {
+function AppSidebar({
+  user,
+  entitledTools,
+}: {
+  user: NonNullable<NavUser>;
+  entitledTools: string[];
+}) {
   const pathname  = usePathname();
   const initials  = user.handle.slice(0, 2).toUpperCase();
   const [unread, setUnread]     = useState(0);
@@ -210,16 +216,26 @@ function AppSidebar({ user }: { user: NonNullable<NavUser> }) {
         )}
         aria-label="App navigation"
       >
-        {NAV_GROUPS.map((g) => (
-          <NavSection
-            key={g.key}
-            groupKey={g.key}
-            label={g.label}
-            items={g.items}
-            pathname={pathname}
-            collapsed={collapsed}
-          />
-        ))}
+        {NAV_GROUPS.map((g) => {
+          // The "tools" group is entitlement-gated: only modules the user has
+          // been granted appear. Other groups (workspace, community) are shown
+          // as the base experience. Empty groups are hidden entirely.
+          const items =
+            g.key === "tools"
+              ? g.items.filter((it) => entitledTools.includes(it.href))
+              : g.items;
+          if (items.length === 0) return null;
+          return (
+            <NavSection
+              key={g.key}
+              groupKey={g.key}
+              label={g.label}
+              items={items}
+              pathname={pathname}
+              collapsed={collapsed}
+            />
+          );
+        })}
       </nav>
 
       {/* ── Compact bottom bar ───────────────────────────────── */}
@@ -329,13 +345,14 @@ function MobileNav({ pathname }: { pathname: string }) {
 
 /* ── SiteChrome ─────────────────────────────────────────────────────────────── */
 export function SiteChrome({
-  nav, footer, palette, children, user,
+  nav, footer, palette, children, user, entitledTools = [],
 }: {
   nav: React.ReactNode;
   footer: React.ReactNode;
   palette: React.ReactNode;
   children: React.ReactNode;
   user: NavUser;
+  entitledTools?: string[];
 }) {
   const path = usePathname() || "/";
   if (path.startsWith("/console")) return <>{children}</>;
@@ -346,7 +363,7 @@ export function SiteChrome({
         <div className="sm:hidden">{nav}</div>
         <div className="flex min-h-dvh bg-[#0b0b0e]">
           <div className="hidden sm:flex">
-            <AppSidebar user={user} />
+            <AppSidebar user={user} entitledTools={entitledTools} />
           </div>
           <div className="flex min-w-0 flex-1 flex-col">
             {palette}

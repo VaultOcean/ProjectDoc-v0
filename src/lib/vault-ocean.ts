@@ -86,6 +86,40 @@ export async function grantVaultOceanAccess(
 }
 
 /**
+ * Resolve which product/tool modules a user may see in the nav.
+ * - Superadmin / all-modules grant → every tool.
+ * - Otherwise, modules are unlocked per entitlement:
+ *     • Docx → the user belongs to at least one company (CompanyUser).
+ * A brand-new user with no grants gets an empty toolset (empty canvas).
+ * Returns the set of tool hrefs that should be visible.
+ */
+export async function getEntitledTools(userId: string): Promise<string[]> {
+  const access = await db.vaultOceanAccess.findUnique({ where: { userId } });
+  if (access?.isAdmin || access?.canAccessAllModules) {
+    return [
+      "/terminal",
+      "/tools",
+      "/assets",
+      "/docx",
+      "/payloads",
+      "/cheatsheets",
+      "/programs",
+    ];
+  }
+
+  const tools: string[] = [];
+
+  // Docx is unlocked by company membership (admin adds the user to a company).
+  const docxMembership = await db.companyUser.findFirst({
+    where: { userId, status: "active" },
+    select: { id: true },
+  });
+  if (docxMembership) tools.push("/docx");
+
+  return tools;
+}
+
+/**
  * Revoke VaultOcean access from a user
  */
 export async function revokeVaultOceanAccess(userId: string) {
