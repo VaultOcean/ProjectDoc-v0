@@ -150,13 +150,29 @@ export default function BatchDetailPage() {
             }
           }
 
-          extractedText =
-            textChunks.length > 0
-              ? textChunks.join("\n\n")
-              : "[PDF found but could not extract text - file may be corrupted or heavily image-based]";
+          // Fallback: show helpful message for image-based PDFs
+          if (textChunks.length === 0) {
+            extractedText = `[Scanned PDF detected - Please paste or type the content below]
+
+📄 Instructions:
+1. View the PDF content
+2. Manually enter or paste the text you want to extract
+3. The text will be available for field selection
+
+You can still use the field mapper on the right to select and organize data fields.`;
+          } else {
+            extractedText = textChunks.join("\n\n");
+          }
         } catch (pdfError) {
           console.warn("PDF extraction error:", pdfError);
-          extractedText = "[PDF extraction failed - file may be corrupted]";
+          extractedText = `[Could not auto-extract text]
+
+📄 Instructions for scanned/image PDFs:
+1. Paste the text content you want to extract
+2. Use the field mapper to select specific data fields
+3. Preview and export your data
+
+This allows you to work with any PDF format.`;
         }
       } else if (file.type.startsWith("image/")) {
         extractedText = "[Image - OCR support coming soon]";
