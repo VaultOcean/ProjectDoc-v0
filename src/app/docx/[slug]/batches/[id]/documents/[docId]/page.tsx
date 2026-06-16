@@ -167,12 +167,6 @@ export default function DocumentDetailPage() {
                 alt="Document"
                 className="w-full rounded"
               />
-            ) : isPdfFile ? (
-              <div className="text-center text-zinc-500 py-8">
-                PDF Preview not available yet.
-                <br />
-                <span className="text-xs">Text extraction coming soon</span>
-              </div>
             ) : (
               <div
                 className="text-zinc-300 text-sm whitespace-pre-wrap break-words cursor-text select-text p-4"
@@ -183,9 +177,7 @@ export default function DocumentDetailPage() {
                   }
                 }}
               >
-                {doc.rawContent
-                  ? Buffer.from(doc.rawContent, "base64").toString()
-                  : "No content"}
+                {doc.extractedText || "No text extracted"}
               </div>
             )}
           </div>

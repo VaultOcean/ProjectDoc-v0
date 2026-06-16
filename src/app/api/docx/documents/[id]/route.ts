@@ -42,6 +42,7 @@ export async function GET(req: Request, { params }: { params: Promise<{ id: stri
     fileSizeKb: doc.fileSizeKb,
     status: doc.status,
     rawContent: doc.rawContent, // Base64 encoded file content
+    extractedText: doc.extractedText, // Extracted text from document
     extractedData: JSON.parse(doc.extractedData),
     batchId: doc.batchId,
     batch: {

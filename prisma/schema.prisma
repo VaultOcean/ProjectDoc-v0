@@ -702,12 +702,15 @@ model DocumentFile {
   
   // Raw file content (base64 or text)
   rawContent  String   @db.Text
-  
+
+  // Extracted text from document (OCR result)
+  extractedText String @default("")  @db.Text
+
   status      String   @default("pending") // pending | extracted | verified | failed
-  
+
   // JSON: { "subtotal": { value: "100.50", verified: false }, ... }
   extractedData String @default("{}")
-  
+
   errorMsg    String   @default("")
   
   createdAt   DateTime @default(now())

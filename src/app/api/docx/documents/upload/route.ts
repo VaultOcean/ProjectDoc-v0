@@ -1,10 +1,11 @@
 import { NextResponse } from "next/server";
 import { getCurrentUser } from "@/lib/auth";
 import { db } from "@/lib/db";
+import * as pdfjsLib from "pdfjs-dist";
 
 /**
  * POST /api/docx/documents/upload
- * Upload a document file to a batch
+ * Upload a document file to a batch and extract text
  */
 export async function POST(req: Request) {
   const user = await getCurrentUser();
@@ -48,6 +49,32 @@ export async function POST(req: Request) {
     const buffer = await file.arrayBuffer();
     const rawContent = Buffer.from(buffer).toString("base64");
 
+    // Extract text if PDF
+    let extractedText = "";
+    if (file.type === "application/pdf") {
+      try {
+        const uint8Array = new Uint8Array(buffer);
+        const pdf = await pdfjsLib.getDocument({ data: uint8Array }).promise;
+        const textChunks: string[] = [];
+
+        for (let i = 1; i <= pdf.numPages; i++) {
+          const page = await pdf.getPage(i);
+          const textContent = await page.getTextContent();
+          const text = textContent.items
+            .map((item: any) => item.str)
+            .join(" ");
+          textChunks.push(text);
+        }
+
+        extractedText = textChunks.join("\n\n");
+      } catch (pdfError) {
+        console.warn("PDF text extraction failed:", pdfError);
+        extractedText = "[PDF text extraction failed]";
+      }
+    } else if (file.type.startsWith("image/")) {
+      extractedText = "[Image - OCR coming soon]";
+    }
+
     // Create document file record
     const docFile = await db.documentFile.create({
       data: {
@@ -56,7 +83,8 @@ export async function POST(req: Request) {
         fileType: file.type,
         fileSizeKb: Math.ceil(file.size / 1024),
         rawContent,
-        status: "pending",
+        extractedText,
+        status: extractedText ? "extracted" : "pending",
         extractedData: JSON.stringify({}),
       },
     });
@@ -79,6 +107,7 @@ export async function POST(req: Request) {
           fileName: file.name,
           fileSize: file.size,
           batchId,
+          textLength: extractedText.length,
         }),
       },
     });
