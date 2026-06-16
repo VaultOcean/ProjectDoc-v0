@@ -69,11 +69,44 @@ export default function BatchDetailPage() {
 
     setUploading(true);
 
-    const formData = new FormData();
-    formData.append("file", file);
-    formData.append("batchId", batchId);
-
     try {
+      let extractedText = "";
+
+      // Extract text from PDF on client side
+      if (file.type === "application/pdf") {
+        try {
+          const buffer = await file.arrayBuffer();
+          const uint8Array = new Uint8Array(buffer);
+          const pdfjsLib = await import("pdfjs-dist");
+
+          pdfjsLib.GlobalWorkerOptions.workerSrc = `//cdnjs.cloudflare.com/ajax/libs/pdf.js/${pdfjsLib.version}/pdf.worker.min.js`;
+
+          const pdf = await pdfjsLib.getDocument({ data: uint8Array }).promise;
+          const textChunks: string[] = [];
+
+          for (let i = 1; i <= pdf.numPages; i++) {
+            const page = await pdf.getPage(i);
+            const textContent = await page.getTextContent();
+            const text = textContent.items
+              .map((item: any) => item.str)
+              .join(" ");
+            textChunks.push(text);
+          }
+
+          extractedText = textChunks.join("\n\n");
+        } catch (pdfError) {
+          console.warn("PDF extraction failed:", pdfError);
+          extractedText = "[PDF text extraction failed]";
+        }
+      } else if (file.type.startsWith("image/")) {
+        extractedText = "[Image - OCR coming soon]";
+      }
+
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("batchId", batchId);
+      formData.append("extractedText", extractedText);
+
       const res = await fetch("/api/docx/documents", {
         method: "POST",
         body: formData,
